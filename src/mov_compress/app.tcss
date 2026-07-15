@@ -1,0 +1,55 @@
+#body {
+    height: 1fr;
+}
+
+#browser {
+    width: 36%;
+    max-width: 60;
+    border-right: solid $primary;
+    padding: 0 1;
+}
+
+#main {
+    width: 1fr;
+    padding: 0 1;
+}
+
+.panel-title {
+    padding: 1 0;
+    text-style: bold;
+}
+
+#options {
+    height: auto;
+    padding: 1 0;
+}
+
+.option {
+    width: 24;
+    height: auto;
+    margin-right: 2;
+}
+
+.option-wide {
+    width: 1fr;
+    margin-right: 0;
+}
+
+#queue {
+    height: 1fr;
+    border: solid $primary;
+}
+
+#actions {
+    height: auto;
+    padding: 1 0;
+}
+
+#actions Button {
+    margin-right: 2;
+}
+
+#status {
+    height: 1;
+    color: $text-muted;
+}
