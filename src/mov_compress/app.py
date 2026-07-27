@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
@@ -78,6 +79,41 @@ class MovTree(DirectoryTree):
         ]
 
 
+def parse_dropped_paths(text: str) -> list[Path]:
+    """Extract existing .mov files from text a terminal produces on file drop.
+
+    macOS terminals paste the dragged file's path shell-escaped (spaces as
+    ``\\ ``, or the whole path quoted), separating multiple files with spaces,
+    which :func:`shlex.split` unescapes for us.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = [text]
+    paths = []
+    for token in tokens:
+        if token.startswith("file://"):
+            token = token[len("file://") :]
+        path = Path(token).expanduser()
+        if path.suffix.lower() in MOV_SUFFIXES and path.is_file():
+            paths.append(path)
+    return paths
+
+
+class DropInput(Input):
+    """Input that queues dropped .mov files instead of typing their paths."""
+
+    def _on_paste(self, event: events.Paste) -> None:
+        if parse_dropped_paths(event.text):
+            event.stop()
+            self.app.enqueue_dropped(event.text)
+            return
+        super()._on_paste(event)
+
+
 def reveal_in_file_manager(path: Path) -> None:
     """Open the platform file manager with the given file highlighted."""
     if sys.platform == "darwin":
@@ -142,15 +178,16 @@ class MovCompressApp(App):
         with Horizontal(id="body"):
             with Vertical(id="browser"):
                 yield Label("Pick .mov files", classes="panel-title")
+                yield Label("or drag one onto the terminal", classes="panel-hint")
                 yield MovTree(browse_root, id="tree")
             with Vertical(id="main"):
                 with Horizontal(id="options"):
                     with Vertical(classes="option"):
                         yield Label("Max size (MB)")
-                        yield Input(str(self.settings.target_mb), id="target-mb")
+                        yield DropInput(str(self.settings.target_mb), id="target-mb")
                     with Vertical(classes="option option-wide"):
                         yield Label("Output directory (empty = next to source)")
-                        yield Input(
+                        yield DropInput(
                             self.settings.output_dir,
                             placeholder=str(Path.home() / "Movies" / "compressed"),
                             id="output-dir",
@@ -182,12 +219,16 @@ class MovCompressApp(App):
 
     @on(DirectoryTree.FileSelected, "#tree")
     def add_file(self, event: DirectoryTree.FileSelected) -> None:
-        source = event.path
+        if self.enqueue_source(event.path):
+            self.set_status(f"queued {event.path.name}")
+
+    def enqueue_source(self, source: Path) -> bool:
+        """Add one .mov file to the queue. Returns True if it was added."""
         if source.suffix.lower() not in MOV_SUFFIXES:
-            return
+            return False
         if self.queue.contains(source):
             self.set_status(f"{source.name} is already queued")
-            return
+            return False
 
         job = Job(source=source)
         self.queue.jobs.append(job)
@@ -200,7 +241,21 @@ class MovCompressApp(App):
             key=str(len(self.queue.jobs) - 1),
         )
         self.settings.browse_dir = str(source.parent)
-        self.set_status(f"queued {source.name}")
+        return True
+
+    def enqueue_dropped(self, text: str) -> None:
+        """Queue any .mov files found in text dropped onto the terminal."""
+        added = [path for path in parse_dropped_paths(text) if self.enqueue_source(path)]
+        if len(added) == 1:
+            self.set_status(f"queued {added[0].name}")
+        elif added:
+            self.set_status(f"queued {len(added)} files")
+
+    def on_paste(self, event: events.Paste) -> None:
+        """Handle a file dropped onto the terminal while the queue has focus."""
+        if parse_dropped_paths(event.text):
+            event.stop()
+            self.enqueue_dropped(event.text)
 
     def action_remove_job(self) -> None:
         job, index = self.selected_job()
