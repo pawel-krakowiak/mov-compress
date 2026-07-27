@@ -82,6 +82,7 @@ def ffmpeg_available() -> bool:
 
 def probe(source: Path) -> VideoInfo:
     """Read duration, size and audio presence of a video via ffprobe."""
+    # fmt: off
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -90,6 +91,7 @@ def probe(source: Path) -> VideoInfo:
         "-show_streams",
         str(source),
     ]
+    # fmt: on
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
     except OSError as error:
@@ -173,6 +175,7 @@ def compress(
 
     with tempfile.TemporaryDirectory(prefix="mov-compress-") as tmp:
         passlog = str(Path(tmp) / "ffmpeg2pass")
+        # fmt: off
         common = [
             "ffmpeg",
             "-hide_banner",
@@ -189,6 +192,7 @@ def compress(
             "-pix_fmt", "yuv420p",
             "-passlogfile", passlog,
         ]
+        # fmt: on
         audio = ["-c:a", "aac", "-b:a", f"{audio_kbps}k"] if info.has_audio else ["-an"]
         faststart = (
             ["-movflags", "+faststart"] if output.suffix.lower() in FASTSTART_CONTAINERS else []
