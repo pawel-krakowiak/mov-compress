@@ -15,8 +15,13 @@
 }
 
 .panel-title {
-    padding: 1 0;
+    padding: 1 0 0 0;
     text-style: bold;
+}
+
+.panel-hint {
+    padding: 0 0 1 0;
+    color: $text-muted;
 }
 
 #options {

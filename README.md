@@ -9,6 +9,8 @@ and powered by two-pass `ffmpeg` encoding.
 ## Features
 
 - **Multi-file queue** - browse the filesystem in-app and pick any number of `.mov` files
+- **Drag & drop** - drag one or more `.mov` files onto the terminal window to queue them
+  instantly (macOS Terminal.app and iTerm2)
 - **Target size, not bitrate** - enter a max size in MB; the video bitrate is computed
   from the clip duration so the output reliably lands at or under the target
 - **Two-pass x264** - the bit budget is spread over the whole clip for the best
