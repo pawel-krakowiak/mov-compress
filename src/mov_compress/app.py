@@ -1,11 +1,12 @@
-"""Textual TUI for batch-compressing .mov files to a chosen maximum size."""
+"""Textual TUI for batch-compressing video files to a chosen maximum size."""
 
 from __future__ import annotations
 
+import argparse
 import shlex
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,10 +16,10 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, DataTable, DirectoryTree, Footer, Header, Input, Label
 
-from .compressor import CompressionError, compress, ffmpeg_available
+from . import __version__
+from .compressor import INPUT_SUFFIXES, CompressionError, compress, ffmpeg_available
 from .config import Settings
 
-MOV_SUFFIXES = {".mov"}
 PROGRESS_BAR_WIDTH = 20
 
 STATUS_LABELS = {
@@ -67,20 +68,20 @@ class JobStatus(Message):
         super().__init__()
 
 
-class MovTree(DirectoryTree):
-    """Directory tree that only shows directories and .mov files."""
+class VideoTree(DirectoryTree):
+    """Directory tree that only shows directories and supported video files."""
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         return [
             path
             for path in paths
             if (path.is_dir() and not path.name.startswith("."))
-            or path.suffix.lower() in MOV_SUFFIXES
+            or path.suffix.lower() in INPUT_SUFFIXES
         ]
 
 
 def parse_dropped_paths(text: str) -> list[Path]:
-    """Extract existing .mov files from text a terminal produces on file drop.
+    """Extract existing video files from text a terminal produces on file drop.
 
     macOS terminals paste the dragged file's path shell-escaped (spaces as
     ``\\ ``, or the whole path quoted), separating multiple files with spaces,
@@ -98,13 +99,13 @@ def parse_dropped_paths(text: str) -> list[Path]:
         if token.startswith("file://"):
             token = token[len("file://") :]
         path = Path(token).expanduser()
-        if path.suffix.lower() in MOV_SUFFIXES and path.is_file():
+        if path.suffix.lower() in INPUT_SUFFIXES and path.is_file():
             paths.append(path)
     return paths
 
 
 class DropInput(Input):
-    """Input that queues dropped .mov files instead of typing their paths."""
+    """Input that queues dropped video files instead of typing their paths."""
 
     def _on_paste(self, event: events.Paste) -> None:
         if parse_dropped_paths(event.text):
@@ -152,7 +153,7 @@ class QueueState:
 
 
 class MovCompressApp(App):
-    """Batch .mov compressor with a fixed output directory and size target."""
+    """Batch video compressor with a fixed output directory and size target."""
 
     TITLE = "mov-compress"
     CSS_PATH = "app.tcss"
@@ -164,10 +165,11 @@ class MovCompressApp(App):
         ("q", "quit", "Quit"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, initial_files: Sequence[Path] = ()) -> None:
         super().__init__()
         self.settings = Settings.load()
         self.queue = QueueState()
+        self.initial_files = list(initial_files)
 
     def compose(self) -> ComposeResult:
         browse_root = Path(self.settings.browse_dir or Path.home())
@@ -177,9 +179,9 @@ class MovCompressApp(App):
         yield Header()
         with Horizontal(id="body"):
             with Vertical(id="browser"):
-                yield Label("Pick .mov files", classes="panel-title")
+                yield Label("Pick video files", classes="panel-title")
                 yield Label("or drag one onto the terminal", classes="panel-hint")
-                yield MovTree(browse_root, id="tree")
+                yield VideoTree(browse_root, id="tree")
             with Vertical(id="main"):
                 with Horizontal(id="options"):
                     with Vertical(classes="option"):
@@ -210,10 +212,15 @@ class MovCompressApp(App):
         table.add_column("Progress", key="progress")
         if not ffmpeg_available():
             self.notify(
-                "ffmpeg/ffprobe not found on PATH. Install it first (brew install ffmpeg).",
+                "ffmpeg/ffprobe not found on PATH. Install it first, "
+                "e.g. 'brew install ffmpeg' or 'apt install ffmpeg'.",
                 severity="error",
                 timeout=30,
             )
+        for path in self.initial_files:
+            self.enqueue_source(path)
+        if self.initial_files:
+            self.set_status(f"queued {len(self.queue.jobs)} file(s) from the command line")
 
     # --- queue management -------------------------------------------------
 
@@ -223,8 +230,8 @@ class MovCompressApp(App):
             self.set_status(f"queued {event.path.name}")
 
     def enqueue_source(self, source: Path) -> bool:
-        """Add one .mov file to the queue. Returns True if it was added."""
-        if source.suffix.lower() not in MOV_SUFFIXES:
+        """Add one video file to the queue. Returns True if it was added."""
+        if source.suffix.lower() not in INPUT_SUFFIXES or not source.is_file():
             return False
         if self.queue.contains(source):
             self.set_status(f"{source.name} is already queued")
@@ -244,7 +251,7 @@ class MovCompressApp(App):
         return True
 
     def enqueue_dropped(self, text: str) -> None:
-        """Queue any .mov files found in text dropped onto the terminal."""
+        """Queue any video files found in text dropped onto the terminal."""
         added = [path for path in parse_dropped_paths(text) if self.enqueue_source(path)]
         if len(added) == 1:
             self.set_status(f"queued {added[0].name}")
@@ -319,7 +326,7 @@ class MovCompressApp(App):
             if job.status in ("queued", "failed")
         ]
         if not pending:
-            self.set_status("nothing to compress - add some .mov files first")
+            self.set_status("nothing to compress - add some video files first")
             return
 
         self.settings.target_mb = target_mb
@@ -394,8 +401,17 @@ class MovCompressApp(App):
         if message.status == "done" and message.output is not None:
             job.progress = 1.0
             table.update_cell(str(message.index), "progress", progress_bar(1.0))
-            size = human_size(message.output.stat().st_size)
-            self.set_status(f"saved {message.output.name} ({size})")
+            size_bytes = message.output.stat().st_size
+            size = human_size(size_bytes)
+            if size_bytes > self.settings.target_mb * 1024 * 1024:
+                # The bitrate floors keep quality usable, so a very small
+                # target for a long clip simply cannot be reached.
+                self.set_status(
+                    f"saved {message.output.name} ({size}) - "
+                    "over target, the clip is too long for that size"
+                )
+            else:
+                self.set_status(f"saved {message.output.name} ({size})")
         elif message.status == "failed":
             self.set_status(f"{job.source.name} failed: {message.error}")
         elif message.status == "skipped":
@@ -428,10 +444,38 @@ class MovCompressApp(App):
         self.exit()
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the ``mov-compress`` command."""
+    supported = " ".join(sorted(INPUT_SUFFIXES))
+    parser = argparse.ArgumentParser(
+        prog="mov-compress",
+        description="Batch-compress video files to a chosen maximum size.",
+        epilog=f"Supported input formats: {supported}",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        type=Path,
+        help="video files to put in the queue on startup",
+    )
+    parser.add_argument("-V", "--version", action="version", version=f"mov-compress {__version__}")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the ``mov-compress`` command."""
-    MovCompressApp().run()
+    args = build_parser().parse_args(argv)
+    files = [path.expanduser().resolve() for path in args.files]
+    unsupported = [path for path in files if path.suffix.lower() not in INPUT_SUFFIXES]
+    missing = [path for path in files if not path.is_file()]
+    for path in unsupported:
+        print(f"mov-compress: unsupported format, skipping {path}", file=sys.stderr)
+    for path in missing:
+        print(f"mov-compress: no such file, skipping {path}", file=sys.stderr)
+
+    MovCompressApp(initial_files=files).run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
