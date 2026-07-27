@@ -32,6 +32,8 @@ class Settings:
             raw = json.loads(config_file().read_text())
         except (OSError, ValueError):
             return cls()
+        if not isinstance(raw, dict):
+            return cls()
         known = {f.name for f in fields(cls)}
         try:
             return cls(**{k: v for k, v in raw.items() if k in known})
@@ -39,7 +41,10 @@ class Settings:
             return cls()
 
     def save(self) -> None:
-        """Write settings to disk, creating the config directory if needed."""
+        """Write settings to disk, ignoring an unwritable config directory."""
         path = config_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), indent=2))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(asdict(self), indent=2))
+        except OSError:
+            pass
