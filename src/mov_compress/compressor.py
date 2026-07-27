@@ -19,8 +19,45 @@ from pathlib import Path
 
 OUTPUT_PREFIX = "c_"
 AUDIO_BITRATE_KBPS = 128
+MIN_AUDIO_BITRATE_KBPS = 48
+#: Largest share of the bit budget the audio track may take. Without this a
+#: fixed 128 kbps track would swallow a small target whole.
+AUDIO_BUDGET_SHARE = 0.2
 MIN_VIDEO_BITRATE_KBPS = 100
 SIZE_SAFETY_MARGIN = 0.97
+
+#: Containers the app accepts as input. ffmpeg decodes far more than this;
+#: the list is limited to formats commonly worth re-encoding.
+INPUT_SUFFIXES = frozenset(
+    {
+        ".mov",
+        ".mp4",
+        ".m4v",
+        ".mkv",
+        ".webm",
+        ".avi",
+        ".wmv",
+        ".flv",
+        ".mpg",
+        ".mpeg",
+        ".ts",
+        ".m2ts",
+        ".mts",
+        ".3gp",
+        ".ogv",
+    }
+)
+
+#: Containers that can carry the H.264 video and AAC audio we produce, so the
+#: output can keep the source extension. Anything else is written as MP4.
+H264_CONTAINERS = frozenset(
+    {".mov", ".mp4", ".m4v", ".mkv", ".flv", ".ts", ".m2ts", ".mts", ".3gp"}
+)
+
+#: MP4-family containers, the only ones that understand ``-movflags +faststart``.
+FASTSTART_CONTAINERS = frozenset({".mov", ".mp4", ".m4v"})
+
+FALLBACK_SUFFIX = ".mp4"
 
 ProgressCallback = Callable[[float], None]
 
@@ -53,13 +90,19 @@ def probe(source: Path) -> VideoInfo:
         "-show_streams",
         str(source),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as error:
+        raise CompressionError(f"could not run ffprobe: {error}") from error
     if result.returncode != 0:
         raise CompressionError(f"ffprobe failed for {source.name}: {result.stderr.strip()}")
 
-    data = json.loads(result.stdout)
-    fmt = data.get("format", {})
-    duration_s = float(fmt.get("duration", 0.0))
+    try:
+        data = json.loads(result.stdout)
+        fmt = data["format"]
+        duration_s = float(fmt.get("duration", 0.0))
+    except (ValueError, KeyError, TypeError) as error:
+        raise CompressionError(f"could not read metadata of {source.name}") from error
     if duration_s <= 0:
         raise CompressionError(f"could not read duration of {source.name}")
 
@@ -68,20 +111,45 @@ def probe(source: Path) -> VideoInfo:
     return VideoInfo(duration_s=duration_s, size_bytes=size_bytes, has_audio=has_audio)
 
 
+def total_bitrate_kbps(target_mb: float, duration_s: float) -> float:
+    """Return the whole bit budget (kbps) available for the target size."""
+    total_bits = target_mb * 1024 * 1024 * 8 * SIZE_SAFETY_MARGIN
+    return total_bits / duration_s / 1000
+
+
+def audio_bitrate_kbps(target_mb: float, duration_s: float, has_audio: bool) -> int:
+    """Compute the audio bitrate (kbps), shrinking it when the budget is tight."""
+    if not has_audio:
+        return 0
+    share = int(total_bitrate_kbps(target_mb, duration_s) * AUDIO_BUDGET_SHARE)
+    return max(min(AUDIO_BITRATE_KBPS, share), MIN_AUDIO_BITRATE_KBPS)
+
+
 def video_bitrate_kbps(target_mb: float, duration_s: float, has_audio: bool) -> int:
     """Compute the video bitrate (kbps) that lands the output at the target size."""
-    total_bits = target_mb * 1024 * 1024 * 8 * SIZE_SAFETY_MARGIN
-    total_kbps = total_bits / duration_s / 1000
-    audio_kbps = AUDIO_BITRATE_KBPS if has_audio else 0
+    total_kbps = total_bitrate_kbps(target_mb, duration_s)
+    audio_kbps = audio_bitrate_kbps(target_mb, duration_s, has_audio)
     return max(int(total_kbps - audio_kbps), MIN_VIDEO_BITRATE_KBPS)
+
+
+def output_suffix(source: Path) -> str:
+    """Return the extension to write for ``source``.
+
+    The source container is kept whenever it can hold H.264 video and AAC
+    audio; formats that cannot (``.webm``, ``.avi``, ``.mpg``, ...) are
+    written as MP4 instead.
+    """
+    suffix = source.suffix.lower()
+    return suffix if suffix in H264_CONTAINERS else FALLBACK_SUFFIX
 
 
 def plan_output_path(source: Path, output_dir: Path) -> Path:
     """Build a non-clobbering output path with the ``c_`` prefix."""
-    candidate = output_dir / f"{OUTPUT_PREFIX}{source.name}"
+    suffix = output_suffix(source)
+    candidate = output_dir / f"{OUTPUT_PREFIX}{source.stem}{suffix}"
     counter = 1
     while candidate.exists():
-        candidate = output_dir / f"{OUTPUT_PREFIX}{source.stem}_{counter}{source.suffix}"
+        candidate = output_dir / f"{OUTPUT_PREFIX}{source.stem}_{counter}{suffix}"
         counter += 1
     return candidate
 
@@ -99,6 +167,7 @@ def compress(
     """
     info = probe(source)
     bitrate = video_bitrate_kbps(target_mb, info.duration_s, info.has_audio)
+    audio_kbps = audio_bitrate_kbps(target_mb, info.duration_s, info.has_audio)
     output_dir.mkdir(parents=True, exist_ok=True)
     output = plan_output_path(source, output_dir)
 
@@ -120,9 +189,12 @@ def compress(
             "-pix_fmt", "yuv420p",
             "-passlogfile", passlog,
         ]
-        audio = ["-c:a", "aac", "-b:a", f"{AUDIO_BITRATE_KBPS}k"] if info.has_audio else ["-an"]
+        audio = ["-c:a", "aac", "-b:a", f"{audio_kbps}k"] if info.has_audio else ["-an"]
+        faststart = (
+            ["-movflags", "+faststart"] if output.suffix.lower() in FASTSTART_CONTAINERS else []
+        )
         pass_one = [*common, "-pass", "1", "-an", "-f", "null", os.devnull]
-        pass_two = [*common, "-pass", "2", *audio, "-movflags", "+faststart", str(output)]
+        pass_two = [*common, "-pass", "2", *audio, *faststart, str(output)]
 
         try:
             _run_pass(pass_one, info.duration_s, base=0.0, span=0.5, on_progress=on_progress)
@@ -144,12 +216,15 @@ def _run_pass(
     on_progress: ProgressCallback | None,
 ) -> None:
     """Run one ffmpeg pass, mapping its progress into [base, base + span]."""
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        raise CompressionError(f"could not run ffmpeg: {error}") from error
     assert process.stdout is not None
     for line in process.stdout:
         key, _, value = line.strip().partition("=")
