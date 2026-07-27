@@ -11,8 +11,28 @@ build/
 # Tooling caches
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # Editors / OS
 .idea/
 .vscode/
 .DS_Store
+
+# Media used for local testing, and anything this tool produced
+*.mov
+*.mp4
+*.m4v
+*.mkv
+*.webm
+*.avi
+*.wmv
+*.flv
+*.mpg
+*.mpeg
+*.m2ts
+*.mts
+*.3gp
+*.ogv
+!docs/**/*.mp4

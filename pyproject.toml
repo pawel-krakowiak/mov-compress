@@ -1,15 +1,37 @@
 [project]
 name = "mov-compress"
 version = "0.1.0"
-description = "Textual TUI that batch-compresses .mov files down to a chosen maximum size using two-pass ffmpeg encoding"
+description = "Textual TUI that batch-compresses video files down to a chosen maximum size using two-pass ffmpeg encoding"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Pawel Krakowiak" }]
 requires-python = ">=3.11"
+keywords = ["video", "compression", "ffmpeg", "tui", "textual", "terminal"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Topic :: Utilities",
+]
 dependencies = [
     "textual>=1.0",
     "platformdirs>=4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pawel-krakowiak/mov-compress"
+Repository = "https://github.com/pawel-krakowiak/mov-compress"
+Issues = "https://github.com/pawel-krakowiak/mov-compress/issues"
+Changelog = "https://github.com/pawel-krakowiak/mov-compress/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mov-compress = "mov_compress.app:main"
@@ -36,3 +58,4 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
